@@ -3,17 +3,17 @@ import requests
 import json
 import os
 import re
-
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
+import math
 from openai import OpenAI
 
 app = Flask(__name__)
 
-APP_ID = "---"
-APP_SECRET = "---"
+APP_ID = os.getenv("APP_ID")
+APP_SECRET = os.getenv("APP_SECRET")
 
 MEMORY_FILE = "memory.json"
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------
 # Clean Text
@@ -25,6 +25,15 @@ def clean_text(text):
     text = text.replace("hr", "human resources")
     text = text.replace("it", "information technology")
     return text
+
+# -----------------------
+# Cosine Similarity (Pure Python)
+# -----------------------
+def cosine_similarity(vec1, vec2):
+    dot = sum(a * b for a, b in zip(vec1, vec2))
+    norm1 = math.sqrt(sum(a * a for a in vec1))
+    norm2 = math.sqrt(sum(b * b for b in vec2))
+    return dot / (norm1 * norm2)
 
 # -----------------------
 # Load Memory
@@ -40,15 +49,18 @@ def save_memory():
         json.dump(qa_memory, f, indent=4)
 
 # -----------------------
-# Load Embedding Model
+# Get OpenAI Embedding
 # -----------------------
-model = SentenceTransformer('all-MiniLM-L6-v2')
+def get_embedding(text):
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return response.data[0].embedding
 
 # -----------------------
-# OpenAI Client
+# Ask AI
 # -----------------------
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 def ask_ai(question):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -107,43 +119,49 @@ def webhook():
 
     reply = None
 
-    # TEACHING
+    # TEACH
     if user_clean.startswith("teach"):
         try:
             content = user_text.replace("teach:", "").strip()
             question, answer = content.split("=")
 
             clean_question = clean_text(question.strip())
-            qa_memory[clean_question] = answer.strip()
-            save_memory()
+            embedding = get_embedding(clean_question)
 
+            qa_memory[clean_question] = {
+                "answer": answer.strip(),
+                "embedding": embedding
+            }
+
+            save_memory()
             reply = "Learned successfully ✅"
         except:
             reply = "Format should be: teach: question = answer"
 
-    # SEMANTIC SEARCH
+    # SEARCH
     else:
         if qa_memory:
-            questions = list(qa_memory.keys())
-            question_embeddings = model.encode(questions)
-            user_embedding = model.encode([user_clean])
+            user_embedding = get_embedding(user_clean)
 
-            similarities = cosine_similarity(user_embedding, question_embeddings)[0]
-            best_match_index = similarities.argmax()
-            best_score = similarities[best_match_index]
+            best_score = 0
+            best_answer = None
 
-            if best_score > 0.55:
-                reply = qa_memory[questions[best_match_index]]
+            for question, data in qa_memory.items():
+                score = cosine_similarity(user_embedding, data["embedding"])
+                if score > best_score:
+                    best_score = score
+                    best_answer = data["answer"]
 
-    # AI FALLBACK
+            if best_score > 0.75:
+                reply = best_answer
+
+    # FALLBACK
     if not reply:
         reply = ask_ai(user_text)
 
     send_message(chat_id, reply)
     return jsonify({"status": "ok"})
 
-# -----------------------
-# Run Server
-# -----------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
