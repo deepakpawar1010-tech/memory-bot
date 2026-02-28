@@ -3,5 +3,4 @@ requests
 sentence-transformers
 scikit-learn
 openai
-torch
 gunicorn
