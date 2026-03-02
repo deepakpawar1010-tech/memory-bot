@@ -1,14 +1,4 @@
 {
-  "manual_memory": {
-    "leave policy": {
-      "answer": "...",
-      "embedding": [...]
-    }
-  },
-  "document_chunks": {
-    "doc1_chunk_1": {
-      "text": "...",
-      "embedding": [...]
-    }
-  }
+  "manual_memory": {},
+  "document_chunks": {}
 }
