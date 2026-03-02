@@ -193,10 +193,9 @@ def webhook():
                 reply = ask_rag(user_text, best_chunk)
 
     # -------------------------
-    # FINAL FALLBACK
-    # -------------------------
-    if not reply:
-        reply = ask_ai(user_text)
+  # STRICT RAG MODE
+if not reply:
+    reply = "Not found in uploaded documents."
 
     send_message(chat_id, reply)
     return jsonify({"status": "ok"})
