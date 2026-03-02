@@ -181,7 +181,7 @@ def webhook():
                     best_score = score
                     best_chunk = chunk_data["text"]
 
-            if best_score > 0.70:
+            if best_score > 0.50:
                 reply = ask_rag(user_text, best_chunk)
 
     # -------------------------
