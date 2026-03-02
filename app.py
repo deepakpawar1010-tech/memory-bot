@@ -40,6 +40,8 @@ def cosine_similarity(vec1, vec2):
     dot = sum(a * b for a, b in zip(vec1, vec2))
     norm1 = math.sqrt(sum(a * a for a in vec1))
     norm2 = math.sqrt(sum(b * b for b in vec2))
+    if norm1 == 0 or norm2 == 0:
+        return 0
     return dot / (norm1 * norm2)
 
 def get_embedding(text):
@@ -49,17 +51,6 @@ def get_embedding(text):
     )
     return response.data[0].embedding
 
-def ask_ai(question):
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a helpful company assistant."},
-            {"role": "user", "content": question}
-        ],
-        temperature=0.7
-    )
-    return response.choices[0].message.content.strip()
-
 def ask_rag(question, context):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -67,7 +58,7 @@ def ask_rag(question, context):
         messages=[
             {
                 "role": "system",
-                "content": "You are a company assistant. Answer ONLY using the provided document context. If answer is not found in the context, say 'Not found in uploaded documents.'"
+                "content": "Answer ONLY using the provided document context. If the answer is not present, say 'Not found in uploaded documents.'"
             },
             {
                 "role": "user",
@@ -116,7 +107,7 @@ def send_message(chat_id, text):
     requests.post(url + "?receive_id_type=chat_id", headers=headers, json=payload)
 
 # -------------------------
-# WEBHOOK
+# WEBHOOK (STRICT RAG MODE)
 # -------------------------
 
 @app.route("/webhook", methods=["POST"])
@@ -159,13 +150,12 @@ def webhook():
         except:
             reply = "Format should be: teach: question = answer"
 
-    # -------------------------
-    # SEARCH (Manual Memory)
-    # -------------------------
     else:
         user_embedding = get_embedding(user_clean)
 
-        # 1️⃣ Check Manual Memory
+        # -------------------------
+        # 1️⃣ Search Manual Memory
+        # -------------------------
         best_score = 0
         best_answer = None
 
@@ -178,7 +168,9 @@ def webhook():
         if best_score > 0.75:
             reply = best_answer
 
-        # 2️⃣ If Not Found → Search Document Chunks
+        # -------------------------
+        # 2️⃣ Search Document Chunks
+        # -------------------------
         if not reply and memory["document_chunks"]:
             best_score = 0
             best_chunk = None
@@ -193,11 +185,10 @@ def webhook():
                 reply = ask_rag(user_text, best_chunk)
 
     # -------------------------
-    # FINAL FALLBACK
+    # STRICT MODE: NO FALLBACK
     # -------------------------
-# STRICT RAG MODE
-if not reply:
-    reply = "Not found in uploaded documents."
+    if not reply:
+        reply = "Not found in uploaded documents."
 
     send_message(chat_id, reply)
     return jsonify({"status": "ok"})
