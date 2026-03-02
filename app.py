@@ -193,7 +193,9 @@ def webhook():
                 reply = ask_rag(user_text, best_chunk)
 
     # -------------------------
-  # STRICT RAG MODE
+    # FINAL FALLBACK
+    # -------------------------
+# STRICT RAG MODE
 if not reply:
     reply = "Not found in uploaded documents."
 
