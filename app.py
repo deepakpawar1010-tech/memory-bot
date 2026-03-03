@@ -6,17 +6,28 @@ import re
 import math
 from openai import OpenAI
 from PyPDF2 import PdfReader
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 
 APP_ID = os.getenv("APP_ID")
 APP_SECRET = os.getenv("APP_SECRET")
-MEMORY_FILE = "memory.json"
 
 DOC_THRESHOLD = 0.55
 MANUAL_THRESHOLD = 0.75
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# -------------------------
+# DATABASE CONNECTION
+# -------------------------
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+conn = psycopg2.connect(DATABASE_URL)
+conn.autocommit = True
+cursor = conn.cursor(cursor_factory=RealDictCursor)
 
 # -------------------------
 # HELPER FUNCTIONS
@@ -87,26 +98,6 @@ def ask_rag(question, context):
     )
     return response.choices[0].message.content.strip()
 
-
-# -------------------------
-# LOAD MEMORY
-# -------------------------
-
-if os.path.exists(MEMORY_FILE):
-    with open(MEMORY_FILE, "r") as f:
-        memory = json.load(f)
-else:
-    memory = {
-        "manual_memory": {},
-        "document_chunks": {}
-    }
-
-
-def save_memory():
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(memory, f, indent=4)
-
-
 # -------------------------
 # LARK AUTH
 # -------------------------
@@ -132,7 +123,6 @@ def send_message(chat_id, text):
     }
     requests.post(url + "?receive_id_type=chat_id", headers=headers, json=payload)
 
-
 # -------------------------
 # WEBHOOK
 # -------------------------
@@ -156,7 +146,7 @@ def webhook():
     reply = None
 
     # -------------------------
-    # TEACH (Manual Memory)
+    # TEACH (Manual Memory -> DB)
     # -------------------------
     if user_clean.startswith("teach"):
         try:
@@ -166,12 +156,11 @@ def webhook():
             clean_question = clean_text(question.strip())
             embedding = get_embedding(clean_question)
 
-            memory["manual_memory"][clean_question] = {
-                "answer": answer.strip(),
-                "embedding": embedding
-            }
+            cursor.execute(
+                "INSERT INTO manual_memory (question, answer, embedding) VALUES (%s, %s, %s)",
+                (clean_question, answer.strip(), json.dumps(embedding))
+            )
 
-            save_memory()
             reply = "Learned successfully ✅"
 
         except:
@@ -181,16 +170,26 @@ def webhook():
         user_embedding = get_embedding(user_clean)
 
         # -------------------------
-        # 1️⃣ Manual Memory Search
+        # 1️⃣ Manual Memory Search (DB)
         # -------------------------
+
+        cursor.execute("SELECT * FROM manual_memory")
+        rows = cursor.fetchall()
+
         best_manual_score = 0
         best_manual_answer = None
 
-        for q, data in memory["manual_memory"].items():
-            score = cosine_similarity(user_embedding, data["embedding"])
+        for row in rows:
+            stored_embedding = row["embedding"]
+
+            if isinstance(stored_embedding, str):
+                stored_embedding = json.loads(stored_embedding)
+
+            score = cosine_similarity(user_embedding, stored_embedding)
+
             if score > best_manual_score:
                 best_manual_score = score
-                best_manual_answer = data["answer"]
+                best_manual_answer = row["answer"]
 
         if best_manual_score > MANUAL_THRESHOLD:
             reply = best_manual_answer
@@ -198,13 +197,21 @@ def webhook():
         # -------------------------
         # 2️⃣ Document Chunk Search (Top-3)
         # -------------------------
-        if not reply and memory["document_chunks"]:
+
+        if not reply:
+            cursor.execute("SELECT * FROM document_chunks")
+            rows = cursor.fetchall()
 
             scored_chunks = []
 
-            for chunk_id, chunk_data in memory["document_chunks"].items():
-                score = cosine_similarity(user_embedding, chunk_data["embedding"])
-                scored_chunks.append((score, chunk_data["text"]))
+            for row in rows:
+                stored_embedding = row["embedding"]
+
+                if isinstance(stored_embedding, str):
+                    stored_embedding = json.loads(stored_embedding)
+
+                score = cosine_similarity(user_embedding, stored_embedding)
+                scored_chunks.append((score, row["text"]))
 
             scored_chunks.sort(key=lambda x: x[0], reverse=True)
 
@@ -222,6 +229,7 @@ def webhook():
     # -------------------------
     # GPT FALLBACK
     # -------------------------
+
     if not reply:
         gpt_answer = ask_ai(user_text)
         reply = (
@@ -232,7 +240,6 @@ def webhook():
 
     send_message(chat_id, reply)
     return jsonify({"status": "ok"})
-
 
 # -------------------------
 # PDF UPLOAD
@@ -260,15 +267,12 @@ def upload_pdf():
         chunks = chunk_text(text)
 
         for chunk in chunks:
-            chunk_id = f"doc_chunk_{len(memory['document_chunks'])}"
             embedding = get_embedding(chunk)
 
-            memory["document_chunks"][chunk_id] = {
-                "text": chunk,
-                "embedding": embedding
-            }
-
-        save_memory()
+            cursor.execute(
+                "INSERT INTO document_chunks (text, embedding) VALUES (%s, %s)",
+                (chunk, json.dumps(embedding))
+            )
 
         return jsonify({
             "message": "Document uploaded successfully",
@@ -277,7 +281,6 @@ def upload_pdf():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 # -------------------------
 
