@@ -20,20 +20,18 @@ MANUAL_THRESHOLD = 0.55
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -------------------------
-# DATABASE CONNECTION
+# DATABASE CONNECTION (SAFE)
 # -------------------------
 
-conn = psycopg2.connect(
-    host="aws-1-ap-south-1.pooler.supabase.com",
-    database="postgres",
-    user="postgres.udmzdiywjanygdtrpnuf",
-    password=os.getenv("SUPABASE_DB_PASSWORD"),
-    port=5432,
-    sslmode="require"
-)
-
-conn.autocommit = True
-cursor = conn.cursor(cursor_factory=RealDictCursor)
+def get_db_connection():
+    return psycopg2.connect(
+        host="aws-1-ap-south-1.pooler.supabase.com",
+        database="postgres",
+        user="postgres.udmzdiywjanygdtrpnuf",
+        password=os.getenv("SUPABASE_DB_PASSWORD"),
+        port=5432,
+        sslmode="require"
+    )
 
 # -------------------------
 # HELPER FUNCTIONS
@@ -135,28 +133,31 @@ def send_message(chat_id, text):
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
+    conn = get_db_connection()
+    conn.autocommit = True
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-    if "challenge" in data:
-        return jsonify({"challenge": data["challenge"]})
+    try:
+        data = request.json
 
-    event = data.get("event", {})
-    message = event.get("message", {})
-    chat_id = message.get("chat_id")
+        if "challenge" in data:
+            return jsonify({"challenge": data["challenge"]})
 
-    text_content = message.get("content", "{}")
-    text_dict = json.loads(text_content)
-    user_text = text_dict.get("text", "").strip()
-    user_clean = clean_text(user_text)
+        event = data.get("event", {})
+        message = event.get("message", {})
+        chat_id = message.get("chat_id")
 
-    reply = None
+        text_content = message.get("content", "{}")
+        text_dict = json.loads(text_content)
+        user_text = text_dict.get("text", "").strip()
+        user_clean = clean_text(user_text)
 
-    # -------------------------
-    # TEACH (Manual Memory)
-    # -------------------------
+        reply = None
 
-    if user_clean.startswith("teach"):
-        try:
+        # -------------------------
+        # TEACH
+        # -------------------------
+        if user_clean.startswith("teach"):
             content = user_text.replace("teach:", "").strip()
             question, answer = content.split("=")
 
@@ -170,82 +171,75 @@ def webhook():
 
             reply = "Learned successfully ✅"
 
-        except Exception as e:
-            reply = f"Error: {str(e)}"
+        else:
+            user_embedding = get_embedding(user_clean)
 
-    else:
-        user_embedding = get_embedding(user_clean)
-
-        # -------------------------
-        # 1️⃣ Manual Memory Search
-        # -------------------------
-
-        cursor.execute("SELECT * FROM manual_memory")
-        rows = cursor.fetchall()
-
-        best_score = 0
-        best_answer = None
-
-        for row in rows:
-            stored_embedding = row["embedding"]
-
-            if isinstance(stored_embedding, str):
-                stored_embedding = json.loads(stored_embedding)
-
-            score = cosine_similarity(user_embedding, stored_embedding)
-
-            if score > best_score:
-                best_score = score
-                best_answer = row["answer"]
-
-        if best_score > MANUAL_THRESHOLD:
-            reply = best_answer
-
-        # -------------------------
-        # 2️⃣ Document Search
-        # -------------------------
-
-        if not reply:
-            cursor.execute("SELECT * FROM document_chunks")
+            # Manual Memory Search
+            cursor.execute("SELECT * FROM manual_memory")
             rows = cursor.fetchall()
 
-            scored_chunks = []
+            best_score = 0
+            best_answer = None
 
             for row in rows:
                 stored_embedding = row["embedding"]
-
                 if isinstance(stored_embedding, str):
                     stored_embedding = json.loads(stored_embedding)
 
                 score = cosine_similarity(user_embedding, stored_embedding)
-                scored_chunks.append((score, row["text"]))
 
-            scored_chunks.sort(key=lambda x: x[0], reverse=True)
+                if score > best_score:
+                    best_score = score
+                    best_answer = row["answer"]
 
-            if scored_chunks:
-                top_chunks = scored_chunks[:3]
-                best_doc_score = top_chunks[0][0]
+            if best_score > MANUAL_THRESHOLD:
+                reply = best_answer
 
-                if best_doc_score > DOC_THRESHOLD:
-                    combined_context = "\n\n".join(
-                        [chunk for score, chunk in top_chunks]
-                    )
-                    reply = ask_rag(user_text, combined_context)
+            # Document Search
+            if not reply:
+                cursor.execute("SELECT * FROM document_chunks")
+                rows = cursor.fetchall()
 
-    # -------------------------
-    # GPT FALLBACK
-    # -------------------------
+                scored_chunks = []
 
-    if not reply:
-        gpt_answer = ask_ai(user_text)
-        reply = (
-            "Not present in uploaded documents.\n\n"
-            "GPT Answer:\n"
-            f"{gpt_answer}"
-        )
+                for row in rows:
+                    stored_embedding = row["embedding"]
+                    if isinstance(stored_embedding, str):
+                        stored_embedding = json.loads(stored_embedding)
 
-    send_message(chat_id, reply)
-    return jsonify({"status": "ok"})
+                    score = cosine_similarity(user_embedding, stored_embedding)
+                    scored_chunks.append((score, row["text"]))
+
+                scored_chunks.sort(key=lambda x: x[0], reverse=True)
+
+                if scored_chunks:
+                    top_chunks = scored_chunks[:3]
+                    best_doc_score = top_chunks[0][0]
+
+                    if best_doc_score > DOC_THRESHOLD:
+                        combined_context = "\n\n".join(
+                            [chunk for score, chunk in top_chunks]
+                        )
+                        reply = ask_rag(user_text, combined_context)
+
+        if not reply:
+            gpt_answer = ask_ai(user_text)
+            reply = (
+                "Not present in uploaded documents.\n\n"
+                "GPT Answer:\n"
+                f"{gpt_answer}"
+            )
+
+        send_message(chat_id, reply)
+        return jsonify({"status": "ok"})
+
+    except Exception as e:
+        print("ERROR:", e)
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
 
 # -------------------------
 # PDF UPLOAD
@@ -253,15 +247,16 @@ def webhook():
 
 @app.route("/upload", methods=["POST"])
 def upload_pdf():
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-
-    file = request.files["file"]
-
-    if file.filename == "":
-        return jsonify({"error": "Empty filename"}), 400
+    conn = get_db_connection()
+    conn.autocommit = True
+    cursor = conn.cursor()
 
     try:
+        if "file" not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
+
+        file = request.files["file"]
+
         reader = PdfReader(file)
         text = ""
 
@@ -274,7 +269,6 @@ def upload_pdf():
 
         for chunk in chunks:
             embedding = get_embedding(chunk)
-
             cursor.execute(
                 "INSERT INTO document_chunks (text, embedding) VALUES (%s, %s)",
                 (chunk, json.dumps(embedding))
@@ -286,7 +280,12 @@ def upload_pdf():
         })
 
     except Exception as e:
+        print("UPLOAD ERROR:", e)
         return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
 
 # -------------------------
 
