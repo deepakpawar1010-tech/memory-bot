@@ -23,11 +23,14 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # DATABASE CONNECTION
 # -------------------------
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-conn = psycopg2.connect(DATABASE_URL)
-conn.autocommit = True
-cursor = conn.cursor(cursor_factory=RealDictCursor)
+conn = psycopg2.connect(
+    host="aws-1-ap-south-1.pooler.supabase.com",
+    database="postgres",
+    user="postgres.udmzdiywjanygdtrpnuf",
+    password=os.getenv("SUPABASE_DB_PASSWORD"),
+    port=5432,
+    sslmode="require"
+)
 
 # -------------------------
 # HELPER FUNCTIONS
