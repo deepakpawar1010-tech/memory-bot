@@ -32,6 +32,9 @@ conn = psycopg2.connect(
     sslmode="require"
 )
 
+conn.autocommit = True
+cursor = conn.cursor(cursor_factory=RealDictCursor)
+
 # -------------------------
 # HELPER FUNCTIONS
 # -------------------------
@@ -48,7 +51,7 @@ def chunk_text(text, chunk_size=800, overlap=100):
 
 def clean_text(text):
     text = text.lower().strip()
-    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r"[^\w\s]", "", text)
     text = text.replace("wfh", "work from home")
     text = text.replace("hr", "human resources")
     text = text.replace("it", "information technology")
@@ -91,7 +94,7 @@ def ask_rag(question, context):
         messages=[
             {
                 "role": "system",
-                "content": "Answer ONLY using the provided document context. If the answer is not present in the context, say 'Not found in uploaded documents.'"
+                "content": "Answer ONLY using the provided document context. If not found, say 'Not found in uploaded documents.'"
             },
             {
                 "role": "user",
@@ -149,8 +152,9 @@ def webhook():
     reply = None
 
     # -------------------------
-    # TEACH (Manual Memory -> DB)
+    # TEACH (Manual Memory)
     # -------------------------
+
     if user_clean.startswith("teach"):
         try:
             content = user_text.replace("teach:", "").strip()
@@ -166,21 +170,21 @@ def webhook():
 
             reply = "Learned successfully ✅"
 
-	except Exception as e:
-    	    reply = f"Error: {str(e)}"
+        except Exception as e:
+            reply = f"Error: {str(e)}"
 
     else:
         user_embedding = get_embedding(user_clean)
 
         # -------------------------
-        # 1️⃣ Manual Memory Search (DB)
+        # 1️⃣ Manual Memory Search
         # -------------------------
 
         cursor.execute("SELECT * FROM manual_memory")
         rows = cursor.fetchall()
 
-        best_manual_score = 0
-        best_manual_answer = None
+        best_score = 0
+        best_answer = None
 
         for row in rows:
             stored_embedding = row["embedding"]
@@ -190,15 +194,15 @@ def webhook():
 
             score = cosine_similarity(user_embedding, stored_embedding)
 
-            if score > best_manual_score:
-                best_manual_score = score
-                best_manual_answer = row["answer"]
+            if score > best_score:
+                best_score = score
+                best_answer = row["answer"]
 
-        if best_manual_score > MANUAL_THRESHOLD:
-            reply = best_manual_answer
+        if best_score > MANUAL_THRESHOLD:
+            reply = best_answer
 
         # -------------------------
-        # 2️⃣ Document Chunk Search (Top-3)
+        # 2️⃣ Document Search
         # -------------------------
 
         if not reply:
@@ -220,13 +224,12 @@ def webhook():
 
             if scored_chunks:
                 top_chunks = scored_chunks[:3]
-                best_score = top_chunks[0][0]
+                best_doc_score = top_chunks[0][0]
 
-                if best_score > DOC_THRESHOLD:
+                if best_doc_score > DOC_THRESHOLD:
                     combined_context = "\n\n".join(
                         [chunk for score, chunk in top_chunks]
                     )
-
                     reply = ask_rag(user_text, combined_context)
 
     # -------------------------
