@@ -51,6 +51,17 @@ def get_embedding(text):
     )
     return response.data[0].embedding
 
+def ask_ai(question):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a general knowledge assistant."},
+            {"role": "user", "content": question}
+        ],
+        temperature=0.7
+    )
+    return response.choices[0].message.content.strip()
+
 def ask_rag(question, context):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -58,7 +69,7 @@ def ask_rag(question, context):
         messages=[
             {
                 "role": "system",
-                "content": "Answer ONLY using the provided document context. If the answer is not present, say 'Not found in uploaded documents.'"
+                "content": "Answer ONLY using the provided document context. If the answer is not present in the context, say 'Not found in uploaded documents.'"
             },
             {
                 "role": "user",
@@ -107,7 +118,7 @@ def send_message(chat_id, text):
     requests.post(url + "?receive_id_type=chat_id", headers=headers, json=payload)
 
 # -------------------------
-# WEBHOOK (STRICT RAG MODE)
+# WEBHOOK (STRICT + LABELED GPT MODE)
 # -------------------------
 
 @app.route("/webhook", methods=["POST"])
@@ -165,7 +176,7 @@ def webhook():
                 best_score = score
                 best_answer = data_item["answer"]
 
-        if best_score > 0.75:
+        if best_score > 0.65:
             reply = best_answer
 
         # -------------------------
@@ -185,10 +196,15 @@ def webhook():
                 reply = ask_rag(user_text, best_chunk)
 
     # -------------------------
-    # STRICT MODE: NO FALLBACK
+    # GPT FALLBACK (LABELED)
     # -------------------------
     if not reply:
-        reply = "Not found in uploaded documents."
+        gpt_answer = ask_ai(user_text)
+        reply = (
+            "Not present in uploaded documents.\n\n"
+            "GPT Answer:\n"
+            f"{gpt_answer}"
+        )
 
     send_message(chat_id, reply)
     return jsonify({"status": "ok"})
