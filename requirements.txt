@@ -3,3 +3,4 @@ requests
 openai
 gunicorn
 PyPDF2
+psycopg2-binary
