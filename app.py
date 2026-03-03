@@ -15,7 +15,7 @@ APP_ID = os.getenv("APP_ID")
 APP_SECRET = os.getenv("APP_SECRET")
 
 DOC_THRESHOLD = 0.55
-MANUAL_THRESHOLD = 0.65
+MANUAL_THRESHOLD = 0.55
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -166,8 +166,8 @@ def webhook():
 
             reply = "Learned successfully ✅"
 
-        except:
-            reply = "Format should be: teach: question = answer"
+	except Exception as e:
+    	    reply = f"Error: {str(e)}"
 
     else:
         user_embedding = get_embedding(user_clean)
