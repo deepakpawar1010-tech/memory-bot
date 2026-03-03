@@ -13,6 +13,9 @@ APP_ID = os.getenv("APP_ID")
 APP_SECRET = os.getenv("APP_SECRET")
 MEMORY_FILE = "memory.json"
 
+DOC_THRESHOLD = 0.55
+MANUAL_THRESHOLD = 0.75
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -------------------------
@@ -28,6 +31,7 @@ def chunk_text(text, chunk_size=800, overlap=100):
         start += chunk_size - overlap
     return chunks
 
+
 def clean_text(text):
     text = text.lower().strip()
     text = re.sub(r'[^\w\s]', '', text)
@@ -35,6 +39,7 @@ def clean_text(text):
     text = text.replace("hr", "human resources")
     text = text.replace("it", "information technology")
     return text
+
 
 def cosine_similarity(vec1, vec2):
     dot = sum(a * b for a, b in zip(vec1, vec2))
@@ -44,12 +49,14 @@ def cosine_similarity(vec1, vec2):
         return 0
     return dot / (norm1 * norm2)
 
+
 def get_embedding(text):
     response = client.embeddings.create(
         model="text-embedding-3-small",
         input=text
     )
     return response.data[0].embedding
+
 
 def ask_ai(question):
     response = client.chat.completions.create(
@@ -61,6 +68,7 @@ def ask_ai(question):
         temperature=0.7
     )
     return response.choices[0].message.content.strip()
+
 
 def ask_rag(question, context):
     response = client.chat.completions.create(
@@ -79,6 +87,7 @@ def ask_rag(question, context):
     )
     return response.choices[0].message.content.strip()
 
+
 # -------------------------
 # LOAD MEMORY
 # -------------------------
@@ -87,11 +96,16 @@ if os.path.exists(MEMORY_FILE):
     with open(MEMORY_FILE, "r") as f:
         memory = json.load(f)
 else:
-    memory = {"manual_memory": {}, "document_chunks": {}}
+    memory = {
+        "manual_memory": {},
+        "document_chunks": {}
+    }
+
 
 def save_memory():
     with open(MEMORY_FILE, "w") as f:
         json.dump(memory, f, indent=4)
+
 
 # -------------------------
 # LARK AUTH
@@ -102,6 +116,7 @@ def get_tenant_access_token():
     payload = {"app_id": APP_ID, "app_secret": APP_SECRET}
     response = requests.post(url, json=payload)
     return response.json()["tenant_access_token"]
+
 
 def send_message(chat_id, text):
     token = get_tenant_access_token()
@@ -117,8 +132,9 @@ def send_message(chat_id, text):
     }
     requests.post(url + "?receive_id_type=chat_id", headers=headers, json=payload)
 
+
 # -------------------------
-# WEBHOOK (STRICT + LABELED GPT MODE)
+# WEBHOOK
 # -------------------------
 
 @app.route("/webhook", methods=["POST"])
@@ -165,38 +181,46 @@ def webhook():
         user_embedding = get_embedding(user_clean)
 
         # -------------------------
-        # 1️⃣ Search Manual Memory
+        # 1️⃣ Manual Memory Search
         # -------------------------
-        best_score = 0
-        best_answer = None
+        best_manual_score = 0
+        best_manual_answer = None
 
-        for question, data_item in memory["manual_memory"].items():
-            score = cosine_similarity(user_embedding, data_item["embedding"])
-            if score > best_score:
-                best_score = score
-                best_answer = data_item["answer"]
+        for q, data in memory["manual_memory"].items():
+            score = cosine_similarity(user_embedding, data["embedding"])
+            if score > best_manual_score:
+                best_manual_score = score
+                best_manual_answer = data["answer"]
 
-        if best_score > 0.65:
-            reply = best_answer
+        if best_manual_score > MANUAL_THRESHOLD:
+            reply = best_manual_answer
 
         # -------------------------
-        # 2️⃣ Search Document Chunks
+        # 2️⃣ Document Chunk Search (Top-3)
         # -------------------------
         if not reply and memory["document_chunks"]:
-            best_score = 0
-            best_chunk = None
+
+            scored_chunks = []
 
             for chunk_id, chunk_data in memory["document_chunks"].items():
                 score = cosine_similarity(user_embedding, chunk_data["embedding"])
-                if score > best_score:
-                    best_score = score
-                    best_chunk = chunk_data["text"]
+                scored_chunks.append((score, chunk_data["text"]))
 
-            if best_score > 0.50:
-                reply = ask_rag(user_text, best_chunk)
+            scored_chunks.sort(key=lambda x: x[0], reverse=True)
+
+            if scored_chunks:
+                top_chunks = scored_chunks[:3]
+                best_score = top_chunks[0][0]
+
+                if best_score > DOC_THRESHOLD:
+                    combined_context = "\n\n".join(
+                        [chunk for score, chunk in top_chunks]
+                    )
+
+                    reply = ask_rag(user_text, combined_context)
 
     # -------------------------
-    # GPT FALLBACK (LABELED)
+    # GPT FALLBACK
     # -------------------------
     if not reply:
         gpt_answer = ask_ai(user_text)
@@ -209,8 +233,9 @@ def webhook():
     send_message(chat_id, reply)
     return jsonify({"status": "ok"})
 
+
 # -------------------------
-# PDF UPLOAD ROUTE
+# PDF UPLOAD
 # -------------------------
 
 @app.route("/upload", methods=["POST"])
@@ -234,8 +259,8 @@ def upload_pdf():
 
         chunks = chunk_text(text)
 
-        for i, chunk in enumerate(chunks):
-            chunk_id = f"doc_chunk_{len(memory['document_chunks']) + i}"
+        for chunk in chunks:
+            chunk_id = f"doc_chunk_{len(memory['document_chunks'])}"
             embedding = get_embedding(chunk)
 
             memory["document_chunks"][chunk_id] = {
@@ -246,12 +271,13 @@ def upload_pdf():
         save_memory()
 
         return jsonify({
-            "message": "Document uploaded and processed successfully",
+            "message": "Document uploaded successfully",
             "chunks_created": len(chunks)
         })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 # -------------------------
 
